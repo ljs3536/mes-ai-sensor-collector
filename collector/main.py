@@ -1,3 +1,11 @@
+"""센서 수집기.
+
+현재 기능:
+- MQTT 파형과 스칼라를 받아 InfluxDB에 저장
+- 파형 블록에서 RMS, peak, crest, kurtosis, 1x, 2x 특징값을 계산
+- 최신 파형, 스펙트럼, 특징값, 파형 SSE를 조회 API로 제공
+"""
+
 import asyncio
 import json
 import logging
