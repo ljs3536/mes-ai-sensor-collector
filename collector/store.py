@@ -146,9 +146,10 @@ from(bucket: "{self.bucket}")
 
     def latest_waveform(self, machine: str, channel: str | None = None) -> dict | None:
         ch = f' and r.channel == "{channel}"' if channel else ""
+        # 수집 주기가 1시간이어도 마지막 파형 블록을 찾는다.
         flux = f'''
 from(bucket: "{self.bucket}")
-  |> range(start: -15m)
+  |> range(start: -26h)
   |> filter(fn: (r) => r._measurement == "waveform" and r.machine == "{machine}"{ch})
   |> pivot(rowKey: ["_time", "machine", "channel"], columnKey: ["_field"], valueColumn: "_value")
   |> group()
