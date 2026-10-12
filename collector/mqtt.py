@@ -30,6 +30,8 @@ class Ingest:
         client.on_disconnect = lambda *_: log.warning("MQTT 연결 끊김, 재연결 대기")
         client.on_message = self._on_message
         client.reconnect_delay_set(1, 30)
+        if s.mqtt_username:
+            client.username_pw_set(s.mqtt_username, s.mqtt_password)
         client.connect_async(s.mqtt_host, s.mqtt_port, keepalive=30)
         client.loop_start()
         self.client = client
