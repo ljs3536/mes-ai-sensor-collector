@@ -16,6 +16,17 @@ class ScalarOut(Schema):
     time: datetime | None = None
 
 
+class WaveformSummary(Schema):
+    machine: str
+    channel: str
+    ts: datetime
+    sample_rate: int
+    n: int
+    rpm: float
+    unit: str
+    preset: str = ""
+
+
 class WaveformOut(Schema):
     machine: str
     channel: str

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -9,6 +10,19 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 from .config import get_settings
 
 KST = ZoneInfo("Asia/Seoul")
+_TAG = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _tag(value: str) -> str:
+    if not _TAG.fullmatch(value):
+        raise ValueError("식별자가 올바르지 않습니다")
+    return value
+
+
+def _flux_time(ts: datetime) -> str:
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=KST)
+    return ts.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def parse_ts(value: str | None) -> datetime:
@@ -193,6 +207,102 @@ from(bucket: "{self.bucket}")
                     item[key] = rec[key]
             out.append(item)
         return out
+
+    def list_waveforms(self, machine: str, start: datetime, stop: datetime, channel: str | None = None) -> list[dict]:
+        """기간 안의 파형 블록 시각과 메타데이터. 샘플 배열은 넣지 않는다."""
+        machine = _tag(machine)
+        ch = f' and r.channel == "{_tag(channel)}"' if channel else ""
+        flux = f'''
+from(bucket: "{self.bucket}")
+  |> range(start: {_flux_time(start)}, stop: {_flux_time(stop)})
+  |> filter(fn: (r) => r._measurement == "waveform" and r.machine == "{machine}"{ch})
+  |> filter(fn: (r) => r._field != "samples_b64")
+  |> pivot(rowKey: ["_time", "machine", "channel"], columnKey: ["_field"], valueColumn: "_value")
+  |> group()
+  |> sort(columns: ["_time"], desc: true)
+  |> limit(n: 200)
+'''
+        rows = []
+        for rec in self._query_records(flux):
+            rows.append(
+                {
+                    "machine": rec["machine"],
+                    "channel": rec["channel"],
+                    "ts": rec.get_time(),
+                    "sampleRate": int(rec["sample_rate"]),
+                    "n": int(rec["n"]),
+                    "rpm": float(rec["rpm"]),
+                    "unit": rec["unit"] or "g",
+                }
+            )
+        return rows
+
+    def waveform_at(self, machine: str, channel: str, ts: datetime) -> dict | None:
+        """한 시각의 파형 블록. 타임스탬프가 어긋나면 앞뒤 1초 안에서 고른다."""
+        machine = _tag(machine)
+        channel = _tag(channel)
+        start = ts - timedelta(seconds=1)
+        stop = ts + timedelta(seconds=1)
+        flux = f'''
+from(bucket: "{self.bucket}")
+  |> range(start: {_flux_time(start)}, stop: {_flux_time(stop)})
+  |> filter(fn: (r) => r._measurement == "waveform" and r.machine == "{machine}" and r.channel == "{channel}")
+  |> pivot(rowKey: ["_time", "machine", "channel"], columnKey: ["_field"], valueColumn: "_value")
+  |> group()
+  |> sort(columns: ["_time"], desc: true)
+  |> limit(n: 1)
+'''
+        recs = list(self._query_records(flux))
+        if not recs:
+            return None
+        rec = recs[0]
+        return {
+            "machine": rec["machine"],
+            "channel": rec["channel"],
+            "ts": rec.get_time(),
+            "sampleRate": int(rec["sample_rate"]),
+            "n": int(rec["n"]),
+            "rpm": float(rec["rpm"]),
+            "unit": rec["unit"] or "g",
+            "samples": rec["samples_b64"],
+        }
+
+    def labels_between(self, machine: str, start: datetime, stop: datetime) -> list[dict]:
+        machine = _tag(machine)
+        flux = f'''
+from(bucket: "{self.bucket}")
+  |> range(start: {_flux_time(start)}, stop: {_flux_time(stop)})
+  |> filter(fn: (r) => r._measurement == "label" and r.machine == "{machine}")
+  |> pivot(rowKey: ["_time", "machine"], columnKey: ["_field"], valueColumn: "_value")
+  |> group()
+  |> sort(columns: ["_time"])
+'''
+        return [
+            {"ts": rec.get_time(), "preset": str(rec.values.get("preset") or "")}
+            for rec in self._query_records(flux)
+        ]
+
+    def features_at(self, machine: str, channel: str, ts: datetime) -> dict | None:
+        machine = _tag(machine)
+        channel = _tag(channel)
+        flux = f'''
+from(bucket: "{self.bucket}")
+  |> range(start: {_flux_time(ts - timedelta(seconds=1))}, stop: {_flux_time(ts + timedelta(seconds=1))})
+  |> filter(fn: (r) => r._measurement == "features" and r.machine == "{machine}" and r.channel == "{channel}")
+  |> pivot(rowKey: ["_time", "machine", "channel"], columnKey: ["_field"], valueColumn: "_value")
+  |> group()
+  |> sort(columns: ["_time"], desc: true)
+  |> limit(n: 1)
+'''
+        recs = list(self._query_records(flux))
+        if not recs:
+            return None
+        rec = recs[0]
+        item = {"ts": rec.get_time(), "machine": rec["machine"], "channel": rec["channel"]}
+        for key in ("rms", "peak", "crest", "kurtosis", "band1x", "band2x"):
+            if key in rec.values:
+                item[key] = rec[key]
+        return item
 
     def machines(self) -> list[str]:
         flux = f'''
